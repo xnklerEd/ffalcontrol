@@ -1,121 +1,181 @@
-# ffalcontrol 会话技术总结（2026-10 实测）
+# ffalcontrol 会话总结（按「扩清单 / 装 HOME / 出厂一键恢复包」三条线重述）
 
-设备：雷鸟 75R79A / TCL MT9655_4K_CN / Android 14 / `UTT2.250416.001 AU01`
-调试通道：USB adb（uid 2000）+ Termux openssh（app uid），**不需要 root**
-
----
-
-## 一、实测有效的机制
-
-### 1. `pm disable-user --user 0 <pkg>`（仅 adb shell）
-- 结果 `enabled=3`（DISABLED_USER），重启保持。
-- **Termux（app uid）执行会被拒**：`SecurityException: uid=10105`。
-- 组件级 `pm disable-user pkg/cls` 被 TCL 拒绝：`Shell cannot change component state`。
-
-### 2. `Guard_disable_App`（com.tcl.providers.config）
-- **包级**条目（`componentName` 为空）由 `com.tcl.guard` 执行，**没有 top-skip**，22 个包实测全部禁用。
-- **组件级**条目**有 top-skip**：开机时前台是 `com.tcl.cyberui`，guard 跳过整条组件列表。**组件级基本不可用**。
-- 行不存在时可用 `ContentResolver.insert` 建行（project_id + config_content）。
-
-### 3. `AppBootPolicy.activityBlackList.componentName`
-- TCL 在 `ActivityStarter` 里拦（`Activity start intercepted by TclAppBoot!`），**无同包/系统应用/前台豁免**。
-- **支持跨包组件**：`com.tcl.mlauncher.mlchannel.MlChannelActivity`（不在 cyberui 包里）实测拦住了应用中心。
-- **精确匹配**：纯类名，不带 `package/`，不解析前缀/通配符。
-- 只能拦 Activity 启动，**拦不住 ViewPager 页切换**（灵控负一屏）。
-- **必须冷启动加载**；待机唤醒不重载。热更新链（ConfigObserver）在 MT9655 上不可靠。
-
-### 4. `InstallConfig.launcherStrategy.packages`
-- HOME 类 APK 的安装白名单。
-- **干净设备直接装 `aerial-standard`（声明 HOME）不需要放行**（实测）。
-- **只有先装过 `aerial-guard` 再换 standard 时才需要**放行 `app.orchard.tv`。
-
-### 5. ConfigProvider 写入（app 上下文）
-- `/config-write` 通用写入可绕过 `GuardControl` / `AppBootPolicy` 的严格校验。
-- 每行写入都要 `expected_sha256`（CAS），写完读回校验。
+设备：雷鸟 鹤7 75R79A / MT9655_4K_CN / Android 14 / `UTT2.250416.001 AU01` / 灵控 3.x
+会话时间：2026-10-23 ~ 10-24
+交付版本：`ffalcontrol 0.1.3`（包名 `app.ffalcontrol`）
 
 ---
 
-## 二、实测无效 / 已作废（不要再试）
+## 三行结论
 
-| 做法 | 结论 |
+1. **线一（扩清单）**：22 个包 + 41 个组件写进 `Guard_disable_App`，44 条写进 `AppBootPolicy`；包级实测全部生效，**组件级 guard 条目全部被 top-skip 跳过**，组件拦截只能靠 AppBootPolicy。
+2. **线二（装 HOME）**：**成功**。`aerial-tv` standard 版装上并设为默认 Home，靠 `InstallConfig.launcherStrategy.packages` 放行 `app.orchard.tv`；冷启动仍会被 cyberui 抢一次前台，按 Home 键回到 aerial。
+3. **线三（出厂一键恢复包）**：**成功**。`ffalcontrol 0.1.3` 一个按钮写三行配置，幂等（重复点提示"已经执行过"），恢复出厂后 ≤10 分钟回到目标状态，**不需要电脑**。
+
+---
+
+## 基线与「判死」的更新（推翻旧会话结论）
+
+| 旧会话说 | 本会话实测 |
 |---|---|
-| 组件级 `Guard_disable_App` | top-skip 跳过，**不生效** |
-| `activityRestrictionBgList` = appmarket2 | 这是"后台 Activity 限制"，**不是黑名单**，拦不住前台点击 |
-| `com.tcl.cyberui.application.AllApplicationActivity` 拦截 | 它是**应用列表**，不是应用中心，拦了没用 |
-| `com.tcl.cyberui.checkupdate.main.CheckUpdateActivity` | 当前固件**没有这个类**（旧类名） |
-| 拦 `com.tcl.versionUpdateApp.SystemUpdateActivity` | 与恢复出厂**共用**，拦了恢复出厂一起废 |
-| 禁 `com.tcl.versionUpdateApp` / `com.snm.upgrade` | 恢复出厂报"此功能未安装" |
-| 禁 `com.tcl.UpdatePeripheral` | 无影响（外设 OTA，与恢复出厂无关） |
-| `dpm set-device-owner` | `mHasFeature=false`，DPM 被裁 |
-| `SYSTEM_ALERT_WINDOW` / AlarmClock PI / Device Owner 绕过 BAL | 全部被拦 |
-| `pm list packages -d` 作为禁用依据 | TCL 口径只列 5 个，**不可信**；用 `pm list packages -e`（不在 = 禁用） |
-| Termux 里 `dumpsys` / `content query` | 无权限（app uid） |
-| TVControl 调 `PowerManager.reboot()` / `ACTION_REQUEST_SHUTDOWN` / `reboot` 命令 | 普通 app 无 REBOOT 权限，**冷重启按钮做不了** |
-| 灵控负一屏（应用中心/桌面切换/检查桌面更新方块） | 是 `MainActivity` 内 `ViewPager` 的页，**AppBootPolicy 拦不住** |
+| ADB 判死（TLS 握手断、无配对 UI、USB 不枚举） | **不再判死**。USB 枚举多次成功（`180AC0C20670840B3`），`adb shell` uid 2000 可用，`pm disable-user` 可用 |
+| root 判死（截至 2026-10-07 无公开方案） | **仍然判死**，全程没有 root |
+| 通道只有 ConfigProvider + Termux sshd | 仍然成立，但多了一条 **USB adb**（`adb install` 依旧被 TCL verifier 拒） |
+| cyberui 的 `CheckUpdateActivity` 在清单里 | **本机固件没有这个类**，旧类名失效 |
 
 ---
 
-## 三、容易忽略的关键细节
+## 线一：扩清单 —— 结果与实测
 
-1. **两个包名前缀别混**：
-   - `com.tcl.mlauncher`（**单 l**）→ 应用中心 `mlchannel.MlChannelActivity`、`subject.*`
-   - `com.tcl.mllauncher`（**双 l**）→ 桌面场景 `mlscene.addwidget.*`、`mlchange.MlChangeSysActivity`
-2. **guard 的 top-skip 只跳组件级**，包级照常执行。
-3. **AppBootPolicy 必须冷启动**（断电 30 秒），待机唤醒不加载。
-4. **恢复出厂清空 `/data`，但 provider 行保留默认结构**（`AppBootPolicy` 有完整默认模板，`componentName` 为空）。
-5. **provision 必须先跳过 `enabled=3` 的包**，否则 `GuardControl` 的 `inspectOrdinaryVisibility` 抛 422（`Ordinary PM visibility is unknown`）。
-6. **UI 按钮的 422 真凶是 `runProvision` 里那段补刀**（provision 成功后又调一次严格校验的 `appBootControl.apply`）——HTTP 端点只走 provision，所以从电脑 curl 成功、点按钮失败。
-7. **负一屏的方块是云端下发**（`launcher.tcloudfamily.com`）：断网恢复出厂后负一屏空白，联网立刻出现。
-8. **`sntp-o.api.leiniao.com` 是 NTP 时间源，不能屏蔽**；`launcher.tcloudfamily.com` / `oss.launcher.tcloudfamily.com` 可屏蔽。
-9. **InstallConfig 白名单只在换 aerial 变体时需要**，干净设备直接装 standard 不需要。
-10. **TVControl 的 token**：v33 及以前是固定值（`generated/BuildToken.java` 的 `VALUE`）；v0.1.x 改为运行时生成、只打 logcat、界面显示前 8 位。
+### 实际写入
+
+```
+Guard_disable_App   63 条 = 22 包 + 41 组件
+  packages:   bootadservice / profilemanager / logkit / c2dm.client / atomic.servicecenter
+              xian.StartandroidService / repairguide / useragreement / appreciate.art
+              playskill / ffeducation / appmarket2 / wholenetsearch / vod / ffkaraoke
+              gamebar / tvsmartalbum / hotelmenu / t_solo / karaoke.micmanager
+              usercenter / walleve
+  components: mlchannel.MlChannelActivity / mlchange.MlChangeSysActivity / DeskSwitchActivityAlias
+              subject.*（两套前缀）/ addwidget.*（7 条）/ checkupdate.* / pwcFullScreen 等
+
+AppBootPolicy       44 条 componentName（与上面组件基本同集，额外含应用中心与桌面切换）
+```
+
+### 关键实测结论
+
+- **包级没有 top-skip**：22 个包在 `pm list packages -e` 里全部消失，说明 guard 在开机时确实执行了包级禁用。
+- **组件级有 top-skip**：开机时前台是 `com.tcl.cyberui`，guard 会跳过整条组件列表。所以 41 个组件条目**从来没真正生效过**——真正起作用的是 AppBootPolicy。
+- **AppBootPolicy 跨包有效**：`com.tcl.mlauncher.mlchannel.MlChannelActivity` 不属于 cyberui 包，加进去之后应用中心被拦住了。之前误以为"跨包无效"，其实是选错了 Activity（`AllApplicationActivity` 是应用列表，不是应用中心）。
+- **`activityRestrictionBgList` 不是黑名单**：它的语义是"caller 在后台时限制启动"，前台点击不受影响，拦不住任何东西。
+- **`pm list packages -d` 不可信**：TCL 口径只列 5 条，实际禁用状态要看 `pm list packages -e`（不在里面 = 禁用）。
+
+### 红线遵守
+
+`cyberui / tv / settings / systemserver / ttvs / TFDS.service / guard / providers.config / initsetup / sogou / ui_mediaCenter / autopair / tcl_bt_rcu_service / tvos` 全部没动。
 
 ---
 
-## 四、版本演进（重要节点）
+## 线二：装 HOME —— 结果与细节
 
-| 版本 | 关键变化 |
-|---|---|
-| v1–v4（.codex 会话） | 只有 `/guard` + `/app-boot-policy`；v4 是 codex 最后一版 |
-| v17 | 加 `/provision`、`/config-write`、30 包清单 |
-| v25 | 加 `activityRestrictionBgList`（后来证明是后台限制） |
-| v27–v31 | 41 组件合并、`GuardControl` 可见性校验绕过、TARGETS 扩到 48 |
-| v33 | 删除 UI 补刀，provision 一把过（不再 422） |
-| **0.1.1** | 包名改 `app.ffalcontrol`、按钮横向、标题显示版本 |
-| **0.1.2** | 应用名 `ffalcontrol 净化`、token 只显示前 8 位、说明文案修正 |
-| **0.1.3** | 重复执行提示"已经执行过，无需重复执行" |
+### 成功路径
+
+1. 装 `aerial-standard.apk`（声明 `HOME` 类别）；
+2. 如果之前装过 `aerial-guard`（不声明 HOME），需要先点「放行 aerial」把 `app.orchard.tv` 写进 `InstallConfig.launcherStrategy.packages`；
+3. 系统默认应用页设为 Home。
+
+### 关键细节（容易搞错）
+
+- **干净设备直接装 standard 不需要白名单**（用户实测）；
+- **只有 guard → standard 换变体时才需要**放行；
+- `aerial-guard` 不声明 HOME，靠 `HomeGuardService` 守护，**不是**系统默认桌面；
+- 冷启动时 `WindowManager` 硬编码 `startHome cyberui`，默认 Home 会生效但会被抢一次前台，按 Home 键回到 aerial；
+- `RoleManager` 的 `HomeSettingsActivity` 可以用来设默认，但 TVControl 没有 `MANAGE_ROLE_HOLDERS`，只能拉起系统页面让用户点。
+
+### 没有解决的
+
+- 冷启动第一次前台仍是灵控（TCL 固件层硬编码）；
+- `dpm set-device-owner` 不可用（`mHasFeature=false`）；
+- 后台启动 Activity 被 BAL 严格拦截，overlay / AlarmClock / DeviceOwner 豁免全部无效。
 
 ---
 
-## 五、恢复出厂后的标准流程（不需要电脑）
+## 线三：出厂一键恢复包 —— 结果与交付物
 
-1. 装 `ffalcontrol_v0.1.3.apk`（电视卫士/文件管理器）；
-2. 打开，点「一键恢复」；
+### 交付物
+
+```
+ffalcontrol_v0.1.3.apk
+  package   app.ffalcontrol
+  label     ffalcontrol 净化
+  version   0.1.3 (versionCode 36)
+  签名      a549dac0…
+  界面      横向一排五个按钮：刷新诊断 / 一键恢复 / 放行 aerial / 默认桌面 / 停止并退出
+
+Mac        ~/Downloads/ffalcontrol_v0.1.3.apk
+电视       /sdcard/Download/ffalcontrol_v0.1.3.apk
+U 盘       /storage/5850-1BFE/ffalcontrol_v0.1.3.apk
+
+U 盘附带
+  README.txt                恢复步骤 + 手工回写示例
+  AppBootPolicy.json        44 条原文（备份/对照）
+  Guard_disable_App.json    63 条原文
+  InstallConfig.json        launcherStrategy 原文
+```
+
+### 一键恢复做了什么
+
+```
+POST /provision 或点「一键恢复」
+  → Guard_disable_App：跳过 enabled=3 的包，其余写入（行不存在时 insert）
+  → AppBootPolicy：读 raw → JSON 追加缺失的 TARGETS → 通用写入
+  → InstallConfig：把 app.orchard.tv 加进 launcherStrategy
+  → 三行都已是目标状态时，返回 already_provisioned，界面提示"已经执行过，无需重复执行"
+```
+
+### 恢复出厂后的标准流程（不需要电脑）
+
+1. 装 `ffalcontrol_v0.1.3.apk`（电视卫士 / 文件管理器）；
+2. 点「一键恢复」；
 3. **断电 30 秒**（不是待机）；
 4. 完成。
 
-产物位置：
-- Mac `~/Downloads/ffalcontrol_v0.1.3.apk`
-- 电视 `/sdcard/Download/ffalcontrol_v0.1.3.apk`
-- U 盘 `/storage/5850-1BFE/ffalcontrol_v0.1.3.apk`
+### 为什么之前会 422（已修）
+
+| 422 来源 | 修法 |
+|---|---|
+| `GuardControl.inspectOrdinaryVisibility` 认为包"不可见" | provision 先跳过 `enabled=3`，再绕过可见性校验直接写 provider |
+| UI 按钮在 provision 成功后又补一次严格校验的 `appBootControl.apply` | 删掉那段补刀，改为读 provision 返回值 |
+| `AppBootPolicy.propose` 要求"按固定顺序追加" | 改成 JSON 解析 + 逐条追加 + 通用写入 |
 
 ---
 
-## 六、当前配置的快照（2026-10-24）
+## 验收清单（实测）
+
+| 项 | 结果 |
+|---|---|
+| 应用中心方块 | ✅ 点不开（`MlChannelActivity` 被 AppBootPolicy 拦） |
+| 桌面切换方块 | ✅ 点不开（`MlChangeSysActivity` / `DeskSwitchActivityAlias`） |
+| 检查桌面更新方块 | ❌ 仍可用——它跳 `com.tcl.versionUpdateApp`，与恢复出厂共用 `SystemUpdateActivity`，拦了恢复出厂也废 |
+| 恢复出厂 | ✅ 可用（OTA 三包 `versionUpdateApp` / `snm.upgrade` / `UpdatePeripheral` 全程 enabled） |
+| 系统更新 | ✅ 可用（无法单独禁，与恢复出厂共用） |
+| 灵控负一屏整体 | ❌ 拦不住——是 `MainActivity` 内 ViewPager 的一页 |
+| 预装包删除 | ❌ 只读分区 + 空卸载白名单，禁用是上限 |
+
+---
+
+## 补充发现：负一屏是云端下发的
+
+- 恢复出厂 + **不联网** → 负一屏空白，"应用中心 / 桌面切换 / 检查桌面更新"方块都不出现；
+- 联网后立刻出现。
+
+说明这些方块来自 `launcher.tcloudfamily.com` 下发的面板配置。想从界面上彻底去掉，只能 DNS 屏蔽：
 
 ```
-AppBootPolicy          44 条组件（含 MlChannelActivity / MlChangeSysActivity / DeskSwitchActivityAlias）
-Guard_disable_App      63 条 = 22 包 + 41 组件
+0.0.0.0 launcher.tcloudfamily.com
+0.0.0.0 oss.launcher.tcloudfamily.com
+0.0.0.0 test.launcher.tcloudfamily.com
+```
+
+**`sntp-o.api.leiniao.com` 是 NTP 时间源，不能屏蔽。**
+
+---
+
+## 回滚
+
+1. U 盘里的三个 JSON 就是原始内容，可用 `/config-write` 原样写回；
+2. 或者恢复出厂（会清空三行，但保留默认结构）；
+3. `pm enable <pkg>` 可单独恢复某个包（需要 adb）。
+
+---
+
+## 当前状态快照（2026-10-24）
+
+```
+AppBootPolicy          44 条组件
+Guard_disable_App      63 条（22 包 + 41 组件）
 InstallConfig          launcherStrategy.packages = ["app.orchard.tv"]
 enabled 包总数         120
+TVControl              app.ffalcontrol 0.1.3
+aerial                 app.orchard.tv 1.40（standard）
 ```
-
----
-
-## 七、已知天花板
-
-- 预装包**不能真删**（只读分区 + 空卸载白名单），禁用是上限。
-- 后台 Service（`LauncherUpdateService` / `AppInstallReceiver`）禁不掉（AppBootPolicy 无 service 黑名单 + guard 跳组件）。
-- "检查桌面更新"与恢复出厂**共用 `SystemUpdateActivity`**，无法单独禁。
-- 灵控负一屏是 ViewPager 页，只能靠 DNS 屏蔽让它不下发。
-- 冷启动进灵控（`WindowManager` 硬编码 `startHome cyberui`）无法用第三方桌面完全绕过，默认 Home 生效但开机可能被抢一次前台。
