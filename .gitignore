@@ -1,0 +1,7 @@
+build/
+*.apk
+*.idsig
+signing.*
+*.password
+token.txt
+.DS_Store
