@@ -118,7 +118,7 @@ ffalcontrol 负责"关掉什么"，桌面替换交给 [pengchujin/aerial-tv](htt
 使用顺序：
 
 1. 先用 ffalcontrol 的 `/provision` 关掉预装广告与推荐入口；
-2. 装 aerial-tv（它的 `app.orchard.tv` 需要先在 `InstallConfig.launcherStrategy.packages` 里放行，ffalcontrol 的 `POST /install-config` 可以做）；
+2. 装 aerial-tv。在干净设备上直接装 `aerial-standard`（声明了 HOME 类别的那个版本）**不需要放行**，已实测；只有当同一包名之前装过另一个变体（`aerial-guard`）时，`InstallConfig.launcherStrategy` 才会拦，这时点「放行 aerial」或走 `POST /install-config` 把 `app.orchard.tv` 加进白名单；
 3. 在系统默认应用页把它设为 Home。
 
 注意：MT9655 上 TCL 的 `WindowManager` 在 `systemReady` 时会硬编码启动 `com.tcl.cyberui`，所以即使 aerial 已是默认 Home，开机前台仍可能被灵控抢一次，按一下 Home 键即可回到 aerial。aerial 的 guard 版（`aerial-guard.apk`）带 `HomeGuardService`，是专门针对这个行为的尝试，但该版本不声明 HOME 类别，是否适用取决于机型。

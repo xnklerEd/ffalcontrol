@@ -131,7 +131,7 @@ ffalcontrol handles *what to turn off*; the home screen itself is better replace
 Order of use:
 
 1. Run ffalcontrol's `/provision` to turn off preinstalled ads and recommendation entries;
-2. Install aerial-tv (its `app.orchard.tv` must be allowlisted in `InstallConfig.launcherStrategy.packages` first — ffalcontrol's `POST /install-config` does that);
+2. Install aerial-tv. If you install `aerial-standard` (the variant that declares `HOME` category) on a clean device, no allowlisting is needed — measured. The `InstallConfig.launcherStrategy` check only bites when a different variant of the same package (`aerial-guard`) was installed before; in that case use **放行 aerial** / `POST /install-config` to add `app.orchard.tv`;
 3. Set it as Home in the system default-apps page.
 
 Note: on MT9655 the TCL `WindowManager` still launches `com.tcl.cyberui` at boot, so the vendor launcher may appear in front once even when aerial is the default Home; pressing the Home key returns to aerial. The `aerial-guard.apk` variant ships a `HomeGuardService` aimed at this behaviour, but it does not declare the HOME category, so whether it applies depends on the model.
