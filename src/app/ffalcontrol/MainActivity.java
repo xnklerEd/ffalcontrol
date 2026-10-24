@@ -99,7 +99,7 @@ public final class MainActivity extends Activity {
         actions.addView(refresh, new LinearLayout.LayoutParams(0, -2, 1));
 
         Button provisionButton = new Button(this);
-        provisionButton.setText("一键恢复");
+        provisionButton.setText("一键净化");
         provisionButton.setFocusable(true);
         provisionButton.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View view) { runProvision("core"); }

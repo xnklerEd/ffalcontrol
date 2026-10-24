@@ -71,13 +71,16 @@ The API token is generated per install, printed to logcat only, and the UI shows
 
 ## Install
 
-`adb install` is usually refused by the TV's installer verifier (`INSTALL_FAILED_VERIFICATION_FAILURE`). The working path is:
+After a factory reset you only need a USB stick.
 
-1. Put the APK on a USB stick;
-2. Plug it into the TV and install through 电视卫士 (the vendor's file/install manager);
-3. Or, if the TV has a file manager, open the APK directly.
+1. Copy `ffalcontrol_v0.1.4.apk` to the stick.
+2. Plug it into the TV and install it with 电视卫士 (or any file manager on the TV).
+3. Open the app and tap **一键净化** (One-click clean).
+4. Unplug the TV for 30 seconds, then power it on.
 
-Launch the app once; the service listens on `127.0.0.1:18742`.
+Done. No computer, no ADB, no token.
+
+> The HTTP endpoints and the API token still exist for scripted use — see the Usage section below.
 
 ## Usage
 
