@@ -55,6 +55,21 @@ KS=my.p12 KS_PASS=pass:xxx KS_ALIAS=myalias ./build.sh
 
 没有 Gradle，`build.sh` 直接走 `javac → d8 → aapt2 → zipalign → apksigner`。
 
+## 为什么不需要 adb
+
+大多数电视去广告教程都默认你有电脑、会开开发者选项、会接 USB 线、会敲 adb 命令——而且恢复出厂之后还得再来一遍。普通家庭用户做不了这个。
+
+ffalcontrol 走的是电视自己暴露的通道：`com.tcl.providers.config`，厂商自己的 `com.tcl.guard` 和 `AppBootPolicy` 都从这行配置里读。装一个 APK、点一个按钮，写进去的就是 adb 会写的同一份配置，不需要线、不需要终端。
+
+| | adb / USB | ffalcontrol |
+|---|---|---|
+| 上手 | 开发者选项、双公头线、驱动、shell | 拷 APK 到 U 盘，点安装 |
+| 恢复出厂之后 | 全部重来一遍 | 重装 APK，点一下 |
+| 包级禁用 | `pm disable-user`，立即生效（`enabled=3`） | `Guard_disable_App`，由 guard 开机执行（`enabled=2`），可见效果相同 |
+| Activity 拦截 | 做不到 | `AppBootPolicy` —— 应用中心、桌面切换、卡片中心、专题页 |
+| 诊断（`dumpsys`） | 可以 | 不行 |
+| 谁会做 | 习惯终端的人 | 会装 App 的人 |
+
 ## 界面按钮
 
 五个按钮横向排在一行：

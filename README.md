@@ -55,6 +55,21 @@ KS=my.p12 KS_PASS=pass:xxx KS_ALIAS=myalias ./build.sh
 
 No Gradle: `build.sh` runs `javac → d8 → aapt2 → zipalign → apksigner` directly.
 
+## Why no ADB
+
+Most TV debloat guides assume a computer and an `adb` session: enable developer options, find a USB cable, pair the device, run shell commands, and repeat the whole thing after every factory reset. That is not something a normal household can do — and it does not survive a reset.
+
+ffalcontrol uses the channel the TV already exposes: `com.tcl.providers.config`, which the vendor's own `com.tcl.guard` and `AppBootPolicy` read from. Installing one APK and tapping one button writes the same configuration an `adb` session would, with no cable and no terminal.
+
+| | ADB / USB | ffalcontrol |
+|---|---|---|
+| Setup | developer options, cable, driver, shell | copy the APK to a USB stick, tap install |
+| After a factory reset | repeat everything | reinstall, tap once |
+| Package disable | `pm disable-user`, immediate (`enabled=3`) | `Guard_disable_App`, applied by `com.tcl.guard` at boot (`enabled=2`) — same visible result |
+| Activity blocking | not possible | `AppBootPolicy` — app store, desktop switch, card center, subject pages |
+| Diagnosis (`dumpsys`) | yes | no |
+| Who can do it | someone comfortable with a terminal | anyone who can install an app |
+
 ## What the buttons do
 
 The app has five buttons in one horizontal row:
