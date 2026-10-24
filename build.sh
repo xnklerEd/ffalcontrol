@@ -11,6 +11,9 @@
 set -eu
 cd "$(dirname "$0")"
 
+VERSION=0.1.4
+OUT="ffalcontrol_v${VERSION}.apk"
+
 : "${JAVA_HOME:?set JAVA_HOME to a JDK 17}"
 : "${ANDROID_HOME:?set ANDROID_HOME to the Android SDK}"
 AJ="$ANDROID_HOME/platforms/android-34/android.jar"
@@ -28,5 +31,5 @@ cp build/dex/classes.dex build/
     --ks "${KS:-$HOME/.android/debug.keystore}" \
     --ks-pass "${KS_PASS:-pass:android}" \
     --ks-key-alias "${KS_ALIAS:-androiddebugkey}" \
-    --out ffalcontrol.apk build/aligned.apk
-echo "built: $(pwd)/ffalcontrol.apk"
+    --out "$OUT" build/aligned.apk
+echo "built: $(pwd)/$OUT"
