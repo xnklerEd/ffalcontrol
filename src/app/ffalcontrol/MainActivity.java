@@ -3,7 +3,6 @@ package app.ffalcontrol;
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.ContentValues;
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
@@ -17,8 +16,10 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.PowerManager;
+import android.os.Process;
 import android.util.Base64;
+import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -34,15 +35,23 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
-/** Normal application process; starts read-only, fixed Guard row API, loopback-only. */
+/**
+ * On-device UI and a loopback-only HTTP API on 127.0.0.1:18742.
+ * Startup and the refresh button only read. Writes go through the guard,
+ * AppBootPolicy, InstallConfig, and provision calls, each compare-and-set
+ * on an expected SHA-256.
+ */
 public final class MainActivity extends Activity {
     private static final int PORT = 18742;
     private static final int MAX_REQUEST = 65536;
@@ -52,6 +61,9 @@ public final class MainActivity extends Activity {
             | PackageManager.MATCH_DIRECT_BOOT_AWARE | PackageManager.MATCH_DIRECT_BOOT_UNAWARE;
     private static final String CONFIG = "content://com.tcl.providers.config/all";
     private static final String FOCUS = "content://com.tcl.tvos.provider.appstatus.com.tcl.cyberui/focus";
+    /** 灵控桌面消息/卡片表（manifest 无权限保护）。 */
+    private static final Uri CYBER_MESSAGES =
+            Uri.parse("content://com.tcl.cyberui.messages/Messages/operate/3");
     private volatile boolean running;
     private volatile ServerSocket server;
     private TextView status;
@@ -72,7 +84,8 @@ public final class MainActivity extends Activity {
         body.setPadding(36, 28, 36, 28);
         body.setBackgroundColor(Color.rgb(18, 22, 28));
         TextView title = new TextView(this);
-        String versionName = "0.1.1";
+        // Used only when PackageManager cannot read android:versionName. Keep it matched to the manifest.
+        String versionName = "0.1.4";
         try { versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Throwable ignored) { }
         title.setText("ffalcontrol · v" + versionName);
         title.setTextColor(Color.WHITE);
@@ -88,7 +101,7 @@ public final class MainActivity extends Activity {
         body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
 
         Button refresh = new Button(this);
         refresh.setText("刷新诊断");
@@ -137,9 +150,9 @@ public final class MainActivity extends Activity {
         resultView.setBackgroundColor(Color.BLACK);
         resultView.setTextSize(19);
         resultView.setPadding(18, 14, 18, 14);
-        String tokenValue = BuildToken.value(MainActivity.this);
+        String tokenValue = ApiToken.value(MainActivity.this);
         String tokenHint = tokenValue.length() > 8 ? tokenValue.substring(0, 8) + "…" : tokenValue;
-        android.util.Log.i("FFalControl", "token=" + tokenValue);
+        Log.i(ApiToken.LOG_TAG, "FFalControl token: " + tokenValue);
         resultView.setText("API token: " + tokenHint + "（完整值见 logcat）\n"
                 + "adb logcat -d | grep \"FFalControl token\"  然后 adb forward tcp:18742 tcp:18742");
         body.addView(resultView);
@@ -156,7 +169,7 @@ public final class MainActivity extends Activity {
         running = true;
         new Thread(new Runnable() {
             @Override public void run() { serve(); }
-        }, "TVControl-loopback").start();
+        }, "ffalcontrol-loopback").start();
         updateSummary();
     }
 
@@ -183,18 +196,19 @@ public final class MainActivity extends Activity {
                             + "\n配置行：" + (configRows == null ? "读取失败" : configRows.length())
                             + "\n应用：" + (appRows == null ? "读取失败" : appRows.length())
                             + "\n\n本机接口：127.0.0.1:" + PORT
-                            + "\n所有请求需要构建时生成的独立令牌。"
+                            + "\n所有请求需要本次安装生成的独立令牌。"
                             + "\n启动和刷新只读；本机受限配置接口会先备份再写入。"
-                            + "\n返回键或“停止服务并退出”可关闭服务。"
+                            + "\n返回键或“停止并退出”可关闭服务。"
                             + (config != null && config.has("error") ? "\n配置错误：" + config.opt("error") : ""));
                 } catch (Throwable failure) { showStatus("诊断部分失败：" + describe(failure)); }
             }
-        }, "TVControl-summary").start();
+        }, "ffalcontrol-summary").start();
     }
 
     private JSONObject snapshot() throws Exception {
         JSONObject result = new JSONObject();
         result.put("schema", 1);
+        // API marker. Not the APK versionName shown in the title.
         result.put("app_version", "4.0-appboot");
         result.put("time_ms", System.currentTimeMillis());
         result.put("read_only", true);
@@ -210,7 +224,7 @@ public final class MainActivity extends Activity {
         build.put("sdk", Build.VERSION.SDK_INT);
         build.put("security_patch", Build.VERSION.SECURITY_PATCH);
         build.put("incremental", Build.VERSION.INCREMENTAL);
-        build.put("process_uid", android.os.Process.myUid());
+        build.put("process_uid", Process.myUid());
         result.put("build", build);
         result.put("config", readProvider(CONFIG, new String[]{"project_id", "config_content"}));
         result.put("applications", applications());
@@ -359,7 +373,7 @@ public final class MainActivity extends Activity {
                     socket.setSoTimeout(7000);
                     handle(socket);
                 } catch (Throwable failure) {
-                    if (running) android.util.Log.w("TVControl", "Loopback request failed: " + describe(failure));
+                    if (running) Log.w(ApiToken.LOG_TAG, "Loopback request failed: " + describe(failure));
                 }
             }
         } catch (Throwable failure) {
@@ -407,7 +421,7 @@ public final class MainActivity extends Activity {
         }
         if (badHeaders || chunked || length < 0) { respond(socket, 400, error("invalid_headers")); return; }
         if (length > MAX_REQUEST) { respond(socket, 413, error("request_too_large")); return; }
-        byte[] expected = ("Bearer " + BuildToken.value(MainActivity.this)).getBytes(StandardCharsets.UTF_8);
+        byte[] expected = ("Bearer " + ApiToken.value(MainActivity.this)).getBytes(StandardCharsets.UTF_8);
         byte[] supplied = authorization == null ? new byte[0] : authorization.getBytes(StandardCharsets.UTF_8);
         if (!MessageDigest.isEqual(expected, supplied)) { respond(socket, 401, error("unauthorized")); return; }
         boolean postGuard = first[1].equals("/guard");
@@ -417,14 +431,17 @@ public final class MainActivity extends Activity {
         boolean postMsgDelete = first[1].equals("/cyberui-messages/delete");
         boolean postMsgInsert = first[1].equals("/cyberui-messages/insert");
         boolean postConfig = first[1].equals("/config-write");
-        if (first[0].equals("POST")
-                && (postGuard || postAppBoot || postInstallConfig || postProvision
-                        || postMsgDelete || postMsgInsert || postConfig)) {
+        boolean jsonPost = postGuard || postAppBoot || postInstallConfig || postProvision
+                || postMsgDelete || postMsgInsert || postConfig;
+        if (first[0].equals("POST") && jsonPost) {
             if (!hasLength || length == 0 || contentType == null
                     || !contentType.toLowerCase(Locale.ROOT).matches("application/json(\\s*;\\s*charset=utf-8)?")) {
-                respond(socket, 400, error((postGuard ? "guard" : postAppBoot ? "appboot"
-                        : postInstallConfig ? "installconfig" : "provision")
-                        + "_requires_content_length_and_json_utf8")); return;
+                // config-write and cyberui message posts keep the historical "provision_" prefix.
+                String kind = "provision";
+                if (postGuard) kind = "guard";
+                else if (postAppBoot) kind = "appboot";
+                else if (postInstallConfig) kind = "installconfig";
+                respond(socket, 400, error(kind + "_requires_content_length_and_json_utf8")); return;
             }
             byte[] body = new byte[length]; int read = 0;
             while (read < length) {
@@ -447,9 +464,14 @@ public final class MainActivity extends Activity {
                 respond(socket, 200, applied);
             }
             catch (GuardControl.ApiFailure failure) { respond(socket, failure.status, failure.result); }
-            catch (Throwable failure) { respond(socket, 500, error((postAppBoot ? "appboot_error: "
-                    : postInstallConfig ? "installconfig_error: "
-                    : postProvision ? "provision_error: " : "guard_error: ") + describe(failure))); }
+            catch (Throwable failure) {
+                // Unclassified posts (config-write, cyberui messages) keep the historical guard_ prefix.
+                String errorPrefix = "guard_error: ";
+                if (postAppBoot) errorPrefix = "appboot_error: ";
+                else if (postInstallConfig) errorPrefix = "installconfig_error: ";
+                else if (postProvision) errorPrefix = "provision_error: ";
+                respond(socket, 500, error(errorPrefix + describe(failure)));
+            }
             return;
         }
         if (!first[0].equals("GET")) { respond(socket, 405, error("method_not_allowed")); return; }
@@ -463,7 +485,8 @@ public final class MainActivity extends Activity {
             result.put("install_config_api", true);
             result.put("provision_api", true);
             result.put("provision_payload_version", ProvisionPayload.VERSION);
-            result.put("version", "5.4-one-click"); result.put("uid", android.os.Process.myUid());
+            // API marker. Not the APK versionName shown in the title.
+            result.put("version", "5.4-one-click"); result.put("uid", Process.myUid());
             result.put("bound_address", "127.0.0.1"); result.put("port", PORT);
         } else if (first[1].equals("/snapshot")) result = snapshot();
         else if (first[1].equals("/focus")) result = readProvider(FOCUS, null);
@@ -484,8 +507,6 @@ public final class MainActivity extends Activity {
         } else { respond(socket, 404, error("not_found")); return; }
         respond(socket, 200, result);
     }
-
-    /** 恢复出厂后的一键恢复：Guard 清单 + launcher 白名单，全部走 app 内 ContentResolver。 */
 
     private void stopServer() {
         running = false;
@@ -537,7 +558,7 @@ public final class MainActivity extends Activity {
                     JSONObject result = installConfigControl.apply(new JSONObject()
                             .put("action", "allow_launcher_package")
                             .put("package", homePackage)
-                            .put("expected_sha256", sha256Hex(raw))
+                            .put("expected_sha256", Hex.sha256(raw))
                             .put("write", true).toString());
                     showResult("已处理：" + homePackage + "\n" + result);
                 } catch (Throwable failure) {
@@ -565,25 +586,30 @@ public final class MainActivity extends Activity {
                                 + "如果刚恢复出厂，请确认装的是当前版本并重新点一次。");
                         return;
                     }
-                    StringBuilder sb = new StringBuilder();
-                    sb.append(ok ? "冷装恢复完成 ✔" : "冷装恢复未完成 ✘").append("\n");
-                    sb.append("payload ").append(ProvisionPayload.VERSION).append("\n");
-                    sb.append("目标包 ").append(packages).append(" 个 / 组件 ").append(components).append(" 个\n");
-                    sb.append("Guard 读回 SHA 匹配：").append(outcome.optBoolean("guard_readback_sha_match")).append("\n");
-                    sb.append("AppBootPolicy 写入：").append(outcome.optBoolean("appboot_verified"))
+                    StringBuilder summary = new StringBuilder();
+                    summary.append(ok ? "冷装恢复完成 ✔" : "冷装恢复未完成 ✘").append("\n");
+                    summary.append("payload ").append(ProvisionPayload.VERSION).append("\n");
+                    summary.append("目标包 ").append(packages).append(" 个 / 组件 ").append(components).append(" 个\n");
+                    summary.append("Guard 读回 SHA 匹配：").append(outcome.optBoolean("guard_readback_sha_match")).append("\n");
+                    summary.append("AppBootPolicy 写入：").append(outcome.optBoolean("appboot_verified"))
                       .append("（新增 ").append(outcome.optInt("appboot_added", 0)).append(" 条）\n");
-                    sb.append("InstallConfig 白名单：").append(outcome.optBoolean("install_config_verified")).append("\n");
-                    if (outcome.has("appboot_error")) sb.append("appboot 错误：").append(outcome.optString("appboot_error")).append("\n");
-                    if (outcome.has("guard_error")) sb.append("guard 错误：").append(outcome.optString("guard_error")).append("\n");
-                    sb.append("\n下一步：断电冷启动（30 秒），让 AppBootPolicy 重新加载。");
-                    showResult(sb.toString());
+                    summary.append("InstallConfig 白名单：").append(outcome.optBoolean("install_config_verified")).append("\n");
+                    if (outcome.has("appboot_error")) summary.append("appboot 错误：").append(outcome.optString("appboot_error")).append("\n");
+                    if (outcome.has("guard_error")) summary.append("guard 错误：").append(outcome.optString("guard_error")).append("\n");
+                    summary.append("\n下一步：断电冷启动（30 秒），让 AppBootPolicy 重新加载。");
+                    showResult(summary.toString());
                 } catch (Throwable failure) {
                     showResult("冷装恢复失败\n" + describe(failure));
                 }
             }
-        }, "TVControl-provision").start();
+        }, "ffalcontrol-provision").start();
     }
 
+    /**
+     * 恢复出厂后的一键恢复，按钮和 POST /provision 共用。
+     * 写 Guard_disable_App、InstallConfig 白名单，以及缺失的 AppBootPolicy 目标。
+     * Guard 直接走 ConfigProvider，避开 GuardControl 的可见性校验。
+     */
     private synchronized JSONObject provision(String body) throws Exception {
         JSONObject request;
         try { request = new JSONObject(body); }
@@ -601,24 +627,24 @@ public final class MainActivity extends Activity {
 
         String guardRaw = featureRaw("Guard_disable_App");
         List<String> skipPackages = new ArrayList<String>();
-        android.content.pm.PackageManager pm = getPackageManager();
+        PackageManager pm = getPackageManager();
         for (String pkg : ProvisionPayload.packages(level)) {
             try {
                 if (pm.getApplicationEnabledSetting(pkg)
-                        == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER) {
+                        == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER) {
                     skipPackages.add(pkg);
                 }
             } catch (Throwable ignored) { }
         }
         out.put("guard_skipped_already_disabled_user", new JSONArray(skipPackages));
         String proposed = ProvisionPayload.guard(guardRaw, level, skipPackages);
-        String guardSha = guardRaw == null ? "ABSENT" : sha256Hex(guardRaw);
+        String guardSha = guardRaw == null ? "ABSENT" : Hex.sha256(guardRaw);
         out.put("guard_current_sha256", guardSha);
-        out.put("guard_proposed_sha256", sha256Hex(proposed));
+        out.put("guard_proposed_sha256", Hex.sha256(proposed));
         out.put("guard_proposed_length", proposed.length());
 
         String launcherRaw = featureRaw("InstallConfig");
-        out.put("install_config_sha256", launcherRaw == null ? "ABSENT" : sha256Hex(launcherRaw));
+        out.put("install_config_sha256", launcherRaw == null ? "ABSENT" : Hex.sha256(launcherRaw));
 
         if (!write) {
             out.put("status", "plan_only");
@@ -662,7 +688,7 @@ public final class MainActivity extends Activity {
                 JSONObject step = new JSONObject();
                 step.put("package", homePackage);
                 String currentRaw = featureRaw("InstallConfig");
-                List<String> allow = InstallConfigControl.launcherListStatic(currentRaw);
+                List<String> allow = InstallConfigControl.launcherPackages(currentRaw);
                 if (allow.contains(homePackage)) {
                     step.put("status", "already_allowlisted");
                 } else {
@@ -670,7 +696,7 @@ public final class MainActivity extends Activity {
                         JSONObject launcherResult = installConfigControl.apply(new JSONObject()
                                 .put("action", "allow_launcher_package")
                                 .put("package", homePackage)
-                                .put("expected_sha256", sha256Hex(currentRaw))
+                                .put("expected_sha256", Hex.sha256(currentRaw))
                                 .put("write", true).toString());
                         launcherWrites++;
                         step.put("status", launcherResult.optString("status", "unknown"));
@@ -693,13 +719,13 @@ public final class MainActivity extends Activity {
         // 写后自检：重新读两行，比对长度与 SHA。
         String guardAfter = featureRaw("Guard_disable_App");
         boolean guardLen = guardAfter != null && guardAfter.length() == proposed.length();
-        boolean guardSha2 = guardAfter != null && sha256Hex(guardAfter).equals(sha256Hex(proposed));
+        boolean guardShaMatch = guardAfter != null && Hex.sha256(guardAfter).equals(Hex.sha256(proposed));
         out.put("guard_readback_length_match", guardLen);
-        out.put("guard_readback_sha_match", guardSha2);
+        out.put("guard_readback_sha_match", guardShaMatch);
         String launcherAfter = featureRaw("InstallConfig");
         boolean launcherAllow = launcherAfter != null;
         if (launcherAllow) {
-            List<String> finalList = InstallConfigControl.launcherListStatic(launcherAfter);
+            List<String> finalList = InstallConfigControl.launcherPackages(launcherAfter);
             for (String homePackage : ProvisionPayload.LAUNCHER_ALLOW)
                 if (!finalList.contains(homePackage)) launcherAllow = false;
         }
@@ -709,50 +735,46 @@ public final class MainActivity extends Activity {
         // 一键：AppBootPolicy 的固定组件拦截（桌面切换 + 卡片 + 专题 + 更新检查）
         boolean appbootOk = true;
         try {
-            String abRaw = featureRaw("AppBootPolicy");
-            if (abRaw == null) {
+            String appBootRaw = featureRaw("AppBootPolicy");
+            if (appBootRaw == null) {
                 out.put("appboot_status", "row_absent");
             } else {
-                JSONArray abRows = new JSONArray(abRaw);
-                JSONObject abTop = abRows.getJSONObject(0);
-                JSONArray abComponents = abTop.getJSONObject("activityBlackList").getJSONArray("componentName");
-                java.util.Set<String> haveAb = new java.util.HashSet<String>();
-                for (int i = 0; i < abComponents.length(); i++) haveAb.add(abComponents.getString(i));
-                int abAdded = 0;
+                JSONArray appBootRows = new JSONArray(appBootRaw);
+                JSONObject appBootTop = appBootRows.getJSONObject(0);
+                JSONArray componentNames = appBootTop.getJSONObject("activityBlackList").getJSONArray("componentName");
+                Set<String> present = new HashSet<String>();
+                for (int i = 0; i < componentNames.length(); i++) present.add(componentNames.getString(i));
+                int added = 0;
                 for (String target : AppBootPolicy.TARGETS) {
-                    if (!haveAb.contains(target)) { abComponents.put(target); haveAb.add(target); abAdded++; }
+                    if (!present.contains(target)) { componentNames.put(target); present.add(target); added++; }
                 }
-                if (abAdded == 0) {
+                if (added == 0) {
                     out.put("appboot_status", "already_target_state");
                 } else {
-                    JSONObject abOut = configControl.apply(new JSONObject()
+                    JSONObject written = configControl.apply(new JSONObject()
                             .put("project_id", "AppBootPolicy")
-                            .put("expected_sha256", sha256Hex(abRaw))
-                            .put("config_content", abRows.toString())
+                            .put("expected_sha256", Hex.sha256(appBootRaw))
+                            .put("config_content", appBootRows.toString())
                             .put("write", true).toString());
-                    out.put("appboot_added", abAdded);
-                    out.put("appboot", abOut);
-                    appbootOk = abOut.optBoolean("persistence_verified", false);
+                    out.put("appboot_added", added);
+                    out.put("appboot", written);
+                    appbootOk = written.optBoolean("persistence_verified", false);
                 }
             }
-        } catch (Throwable ab) {
+        } catch (Throwable failure) {
             appbootOk = false;
-            out.put("appboot_error", describe(ab));
+            out.put("appboot_error", describe(failure));
         }
         out.put("appboot_verified", appbootOk);
 
         boolean alreadyProvisioned = guardAlready && launcherWrites == 0
                 && !out.has("appboot_added");
         out.put("already_provisioned", alreadyProvisioned);
-        boolean ok = guardOk && guardLen && guardSha2 && launcherOk && launcherAllow && appbootOk;
+        boolean ok = guardOk && guardLen && guardShaMatch && launcherOk && launcherAllow && appbootOk;
         out.put("status", ok ? "provision_ok" : "provision_incomplete");
         out.put("ok", ok);
         return out;
     }
-
-    /** 灵控桌面消息/卡片表：content://com.tcl.cyberui.messages/Messages/operate/3（manifest 无权限保护）。 */
-    private static final Uri CYBER_MESSAGES =
-            Uri.parse("content://com.tcl.cyberui.messages/Messages/operate/3");
 
     private JSONObject readCyberMessages() throws Exception {
         JSONObject out = new JSONObject();
@@ -792,7 +814,7 @@ public final class MainActivity extends Activity {
     private JSONObject insertCyberMessage(String body) throws Exception {
         JSONObject request = new JSONObject(body);
         ContentValues values = new ContentValues();
-        java.util.Iterator<String> keys = request.keys();
+        Iterator<String> keys = request.keys();
         while (keys.hasNext()) {
             String key = keys.next();
             Object value = request.get(key);
@@ -840,7 +862,7 @@ public final class MainActivity extends Activity {
         out.put("package", name);
         PackageManager pm = getPackageManager();
         try {
-            android.content.pm.PackageInfo info = pm.getPackageInfo(name, 0);
+            PackageInfo info = pm.getPackageInfo(name, 0);
             out.put("installed_visible", true);
             out.put("version_code", info.versionCode);
             out.put("version_name", String.valueOf(info.versionName));
@@ -848,13 +870,13 @@ public final class MainActivity extends Activity {
             out.put("source_dir", info.applicationInfo.sourceDir);
             out.put("enabled", info.applicationInfo.enabled);
             out.put("system", (info.applicationInfo.flags
-                    & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0);
+                    & ApplicationInfo.FLAG_SYSTEM) != 0);
         } catch (Throwable missing) {
             out.put("installed_visible", false);
             out.put("lookup_error", missing.getClass().getSimpleName());
         }
         try {
-            android.content.pm.ApplicationInfo ai = pm.getApplicationInfo(name, 0);
+            ApplicationInfo ai = pm.getApplicationInfo(name, 0);
             out.put("ordinary_lookup", "present");
             out.put("ordinary_enabled", ai.enabled);
         } catch (Throwable missing) {
@@ -862,7 +884,7 @@ public final class MainActivity extends Activity {
         }
         try {
             out.put("stopped", (pm.getApplicationInfo(name, 0).flags
-                    & android.content.pm.ApplicationInfo.FLAG_STOPPED) != 0);
+                    & ApplicationInfo.FLAG_STOPPED) != 0);
         } catch (Throwable ignored) { }
         return out;
     }
@@ -899,11 +921,10 @@ public final class MainActivity extends Activity {
                     JSONObject row = new JSONObject();
                     row.put("package", pkg);
                     try {
-                        android.content.pm.PackageInfo info = getPackageManager()
-                                .getPackageInfo(pkg, 0);
+                        PackageInfo info = getPackageManager().getPackageInfo(pkg, 0);
                         row.put("installed", true);
                         row.put("system", (info.applicationInfo.flags
-                                & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0);
+                                & ApplicationInfo.FLAG_SYSTEM) != 0);
                         row.put("source_dir", info.applicationInfo.sourceDir);
                     } catch (Throwable missing) {
                         row.put("installed", false);
@@ -922,10 +943,10 @@ public final class MainActivity extends Activity {
         out.put("payload_version", ProvisionPayload.VERSION);
         out.put("target_packages", new JSONArray(ProvisionPayload.packages("core")));
         String guardRaw = featureRaw("Guard_disable_App");
-        out.put("guard_sha256", guardRaw == null ? "ABSENT" : sha256Hex(guardRaw));
+        out.put("guard_sha256", guardRaw == null ? "ABSENT" : Hex.sha256(guardRaw));
         JSONArray done = new JSONArray();
         if (guardRaw != null) {
-            JSONArray list = new JSONObject(new org.json.JSONArray(guardRaw).getString(0)).optJSONArray("disableAppInfoList");
+            JSONArray list = new JSONObject(new JSONArray(guardRaw).getString(0)).optJSONArray("disableAppInfoList");
             if (list != null) for (int i = 0; i < list.length(); i++) {
                 JSONObject entry = list.getJSONObject(i);
                 if (entry.optBoolean("disable", false) && entry.optString("componentName", "").length() == 0)
@@ -935,8 +956,8 @@ public final class MainActivity extends Activity {
         out.put("guard_disabled_packages", done);
         String launcherRaw = featureRaw("InstallConfig");
         out.put("launcher_allowlist", launcherRaw == null
-                ? new JSONArray() : new JSONArray(InstallConfigControl.launcherListStatic(launcherRaw)));
-        out.put("install_config_sha256", launcherRaw == null ? "ABSENT" : sha256Hex(launcherRaw));
+                ? new JSONArray() : new JSONArray(InstallConfigControl.launcherPackages(launcherRaw)));
+        out.put("install_config_sha256", launcherRaw == null ? "ABSENT" : Hex.sha256(launcherRaw));
         return out;
     }
 
@@ -947,15 +968,6 @@ public final class MainActivity extends Activity {
             if (cursor == null || !cursor.moveToFirst()) return null;
             return cursor.getString(cursor.getColumnIndexOrThrow("config_content"));
         }
-    }
-
-    private static String sha256Hex(String text) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] bytes = digest.digest(text.getBytes(StandardCharsets.UTF_8));
-        StringBuilder builder = new StringBuilder(bytes.length * 2);
-        for (byte value : bytes) builder.append(Character.forDigit((value >> 4) & 0xf, 16))
-                .append(Character.forDigit(value & 0xf, 16));
-        return builder.toString();
     }
 
     private static String line(InputStream in, int limit) throws Exception {

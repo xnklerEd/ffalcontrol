@@ -12,6 +12,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Process;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -21,7 +22,6 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -53,7 +53,7 @@ final class GuardControl {
         final String raw;
         final String sha;
         State(boolean exists, String raw) throws Exception {
-            this.exists = exists; this.raw = raw; sha = exists ? sha256(raw) : "ABSENT";
+            this.exists = exists; this.raw = raw; sha = exists ? Hex.sha256(raw) : "ABSENT";
         }
     }
 
@@ -95,7 +95,7 @@ final class GuardControl {
         JSONObject result = new JSONObject();
         result.put("feature", FEATURE); result.put("dry_run", !write);
         result.put("current_exists", before.exists); result.put("current_sha256", before.sha);
-        result.put("proposed_sha256", sha256(proposed)); result.put("changes", states);
+        result.put("proposed_sha256", Hex.sha256(proposed)); result.put("changes", states);
         result.put("change_count", changes.size());
         result.put("policy_removed_does_not_restore_state", true);
         result.put("guard_execution_verified", false); result.put("triggered", false);
@@ -128,7 +128,7 @@ final class GuardControl {
             }
             State after = state();
             result.put("observed_sha256", after.sha);
-            boolean exact = after.exists && proposed.equals(after.raw) && sha256(proposed).equals(after.sha);
+            boolean exact = after.exists && proposed.equals(after.raw) && Hex.sha256(proposed).equals(after.sha);
             boolean counted = !before.exists || (updateCount != null && updateCount.intValue() == 1);
             if (!exact || !counted) {
                 result.put("error", "write_or_readback_not_verified");
@@ -168,7 +168,7 @@ final class GuardControl {
 
     private JSONArray inspectChanges(List<GuardPolicy.Change> changes, String restoreId,
             Map<String, Map<String, Object>> restoreStates) throws Exception {
-        if (android.os.Process.myUid() / 100000 != 0)
+        if (Process.myUid() / 100000 != 0)
             throw new ApiFailure(403, "Guard changes are limited to Android user 0");
         PackageManager pm = context.getPackageManager();
         Set<String> home = new HashSet<String>();
@@ -296,14 +296,14 @@ final class GuardControl {
         backup.put("feature", FEATURE); backup.put("user_id", 0);
         backup.put("original_exists", before.exists); backup.put("original_sha256", before.sha);
         backup.put("config_content", before.exists ? before.raw : JSONObject.NULL);
-        backup.put("proposed_sha256", sha256(proposed)); backup.put("target_states_before", states);
+        backup.put("proposed_sha256", Hex.sha256(proposed)); backup.put("target_states_before", states);
         backup.put("phase", "before_provider_write"); backup.put("guard_execution_verified", false);
         byte[] bytes = backup.toString().getBytes(StandardCharsets.UTF_8);
         try (FileOutputStream out = new FileOutputStream(temporary)) {
             out.write(bytes); out.flush(); out.getFD().sync();
         }
         if (!temporary.renameTo(target)) throw new ApiFailure(500, "Cannot finalize backup; no provider write performed");
-        if (!sha256(readFile(target)).equals(sha256(new String(bytes, StandardCharsets.UTF_8))))
+        if (!Hex.sha256(readFile(target)).equals(Hex.sha256(new String(bytes, StandardCharsets.UTF_8))))
             throw new ApiFailure(500, "Backup readback mismatch; no provider write performed");
         return id;
     }
@@ -316,7 +316,7 @@ final class GuardControl {
             Map<String, Object> saved = GuardPolicy.object(StrictJson.parse(readFile(file), 1048576), "Restore backup");
             boolean exists = Boolean.TRUE.equals(saved.get("original_exists"));
             Object raw = saved.get("config_content");
-            if (exists ? !(raw instanceof String) || !sha256((String) raw).equals(saved.get("original_sha256"))
+            if (exists ? !(raw instanceof String) || !Hex.sha256((String) raw).equals(saved.get("original_sha256"))
                     : !Boolean.FALSE.equals(saved.get("original_exists")) || raw != null || !"ABSENT".equals(saved.get("original_sha256")))
                 throw new IllegalArgumentException("Restore backup original content SHA is invalid");
             return saved;
@@ -355,12 +355,5 @@ final class GuardControl {
             }
         }
         return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
-    }
-
-    static String sha256(String raw) throws Exception {
-        byte[] hash = MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8));
-        StringBuilder out = new StringBuilder();
-        for (byte b : hash) out.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
-        return out.toString();
     }
 }

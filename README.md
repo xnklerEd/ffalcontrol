@@ -77,7 +77,7 @@ The app has five buttons in one horizontal row:
 | Button | Behaviour |
 |---|---|
 | **刷新诊断** | Re-read the state (read-only) and refresh the summary |
-| **一键恢复** | Write `Guard_disable_App` (22 packages + 41 components), append the 44 `AppBootPolicy` entries, and add `app.orchard.tv` to `InstallConfig.launcherStrategy`. If everything already matches, it reports "already executed, nothing to do" instead of writing again |
+| **一键净化** | Write `Guard_disable_App` (22 packages + 41 components), append the 44 `AppBootPolicy` entries, and add `app.orchard.tv` to `InstallConfig.launcherStrategy`. If everything already matches, it reports "already executed, nothing to do" instead of writing again |
 | **放行 aerial** | Add `app.orchard.tv` to the launcher allowlist |
 | **默认桌面** | Open the system default-apps page |
 | **停止并退出** | Stop the loopback server and exit |

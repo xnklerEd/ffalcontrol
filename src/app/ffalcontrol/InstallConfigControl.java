@@ -4,16 +4,14 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Process;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -52,13 +50,13 @@ final class InstallConfigControl {
         out.put("config_content", state.raw == null ? JSONObject.NULL : state.raw);
         out.put("content_length", state.raw == null ? 0 : state.raw.length());
         out.put("strategies", strategies(state.raw));
-        out.put("launcher_allowlist", launcherList(state.raw));
+        out.put("launcher_allowlist", launcherPackages(state.raw));
         out.put("write_api", "allow_launcher_package | remove_launcher_package | set_launcher_enable");
         return out;
     }
 
     synchronized JSONObject apply(String body) throws Exception {
-        if (android.os.Process.myUid() / 100000 != 0)
+        if (Process.myUid() / 100000 != 0)
             throw new GuardControl.ApiFailure(403, "InstallConfig changes are limited to Android user 0");
         JSONObject request;
         try { request = new JSONObject(body); }
@@ -106,9 +104,9 @@ final class InstallConfigControl {
         result.put("applied", applied);
         result.put("dry_run", !write);
         result.put("current_sha256", before.sha);
-        result.put("proposed_sha256", sha256(proposed));
+        result.put("proposed_sha256", Hex.sha256(proposed));
         result.put("proposed_length", proposed.length());
-        result.put("launcher_allowlist_after", launcherList(proposed));
+        result.put("launcher_allowlist_after", launcherPackages(proposed));
         if (!write) { result.put("status", "plan_only"); return result; }
         if (proposed.equals(before.raw)) {
             result.put("status", "identical_content_no_write");
@@ -130,7 +128,7 @@ final class InstallConfigControl {
             result.put("observed_sha256", after.sha);
             result.put("observed_length", after.raw == null ? 0 : after.raw.length());
             boolean exact = after.exists && proposed.equals(after.raw)
-                    && sha256(proposed).equals(after.sha)
+                    && Hex.sha256(proposed).equals(after.sha)
                     && proposed.length() == (after.raw == null ? -1 : after.raw.length());
             boolean counted = updateCount != null && updateCount.intValue() == 1;
             if (!exact || !counted) {
@@ -166,7 +164,7 @@ final class InstallConfigControl {
         final String sha;
         State(boolean exists, String raw) throws Exception {
             this.exists = exists; this.raw = raw;
-            this.sha = exists && raw != null ? sha256(raw) : "";
+            this.sha = exists && raw != null ? Hex.sha256(raw) : "";
         }
     }
 
@@ -276,16 +274,13 @@ final class InstallConfigControl {
         return true;
     }
 
-    static List<String> launcherListStatic(String raw) throws Exception {
+    /** Packages currently listed under launcherStrategy. Also used by the provision readback. */
+    static List<String> launcherPackages(String raw) throws Exception {
         if (raw == null) return new ArrayList<String>();
         JSONArray packages = launcher(top(raw)).optJSONArray("packages");
         List<String> out = new ArrayList<String>();
         if (packages != null) for (int i = 0; i < packages.length(); i++) out.add(packages.getString(i));
         return out;
-    }
-
-    private static List<String> launcherList(String raw) throws Exception {
-        return launcherListStatic(raw);
     }
 
     private static JSONArray strategies(String raw) throws Exception {
@@ -316,7 +311,7 @@ final class InstallConfigControl {
         record.put("user_id", 0);
         record.put("applied", applied);
         record.put("original_sha256", before.sha);
-        record.put("proposed_sha256", sha256(proposed));
+        record.put("proposed_sha256", Hex.sha256(proposed));
         record.put("original_length", before.raw.length());
         record.put("proposed_length", proposed.length());
         record.put("time_ms", System.currentTimeMillis());
@@ -328,28 +323,5 @@ final class InstallConfigControl {
         out.getFD().sync();
         out.close();
         return id;
-    }
-
-    static String readBackup(Context context, String id) throws Exception {
-        if (id == null || !id.matches("ic-[0-9]+-[0-9a-f]{8}"))
-            throw new GuardControl.ApiFailure(422, "invalid backup id");
-        File file = new File(new File(context.getFilesDir(), "installconfig-backups"), id + ".json");
-        if (!file.isFile()) throw new GuardControl.ApiFailure(404, "backup not found");
-        FileInputStream in = new FileInputStream(file);
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] chunk = new byte[8192];
-        int read;
-        while ((read = in.read(chunk)) > 0) buffer.write(chunk, 0, read);
-        in.close();
-        return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
-    }
-
-    static String sha256(String text) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] bytes = digest.digest(text.getBytes(StandardCharsets.UTF_8));
-        StringBuilder builder = new StringBuilder(bytes.length * 2);
-        for (byte value : bytes) builder.append(Character.forDigit((value >> 4) & 0xf, 16))
-                .append(Character.forDigit(value & 0xf, 16));
-        return builder.toString();
     }
 }

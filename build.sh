@@ -11,6 +11,7 @@
 set -eu
 cd "$(dirname "$0")"
 
+# Keep in sync with android:versionName in AndroidManifest.xml.
 VERSION=0.1.4
 OUT="ffalcontrol_v${VERSION}.apk"
 

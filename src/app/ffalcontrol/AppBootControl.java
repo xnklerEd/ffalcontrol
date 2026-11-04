@@ -11,6 +11,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Process;
 import android.provider.Settings;
 import android.system.Os;
 import android.system.OsConstants;
@@ -25,11 +26,16 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** One existing provider row, two fixed activities, no package setters or policy triggers. */
+/**
+ * Reads and writes the existing AppBootPolicy row.
+ * Adds or restores {@link AppBootPolicy#TARGETS}. Does not insert the row,
+ * change package state, or ask the vendor policy to reload.
+ */
 final class AppBootControl {
     private static final Uri URI = Uri.parse("content://com.tcl.providers.config/AppBootPolicy");
     private static final int MATCH = PackageManager.MATCH_DISABLED_COMPONENTS
@@ -72,13 +78,13 @@ final class AppBootControl {
                 proposed = AppBootPolicy.restore(saved, request.restoreId, before.raw);
                 AppBootPolicy.requireSameIdentity(AppBootPolicy.object(saved.get("target_identity"), "Saved target identity"),
                         asMap(preflight.getJSONObject("target_identity")));
-                added = java.util.Collections.emptyList();
+                added = Collections.emptyList();
             }
         } catch (IllegalArgumentException invalid) { throw failure(422, invalid.getMessage()); }
         JSONObject result = common();
         result.put("dry_run", !request.write); result.put("written", false);
         result.put("operation", request.restoreId == null ? "add_fixed_components" : "restore_original_raw");
-        result.put("current_sha256", before.sha); result.put("proposed_sha256", AppBootPolicy.sha(proposed));
+        result.put("current_sha256", before.sha); result.put("proposed_sha256", Hex.sha256(proposed));
         result.put("config_content", proposed); result.put("preflight", preflight);
         result.put("added_components", new JSONArray(added));
         result.put("requires_full_restart", request.restoreId != null);
@@ -118,7 +124,7 @@ final class AppBootControl {
             result.put("error", "write_outcome_unknown: " + describe(problem)); result.put("written", "unknown");
             result.put("persistence_verified", false); throw new GuardControl.ApiFailure(500, result);
         }
-        if (count != 1 || !proposed.equals(after.raw) || !AppBootPolicy.sha(proposed).equals(after.sha)) {
+        if (count != 1 || !proposed.equals(after.raw) || !Hex.sha256(proposed).equals(after.sha)) {
             result.put("error", "write_or_full_readback_not_verified"); result.put("written", "unknown");
             result.put("persistence_verified", false); throw new GuardControl.ApiFailure(500, result);
         }
@@ -126,8 +132,6 @@ final class AppBootControl {
         result.put("written", true); result.put("persistence_verified", true); result.put("resulting_row_count", 1);
         return result;
     }
-
-    synchronized String currentRaw() throws Exception { return state().raw; }
 
     private State state() throws Exception {
         try (Cursor cursor = context.getContentResolver().query(URI, new String[]{"project_id", "config_content"}, null, null, null)) {
@@ -143,8 +147,8 @@ final class AppBootControl {
 
     private JSONObject inspect() throws Exception {
         JSONObject out = new JSONObject(); JSONArray errors = new JSONArray();
-        out.put("caller_uid", android.os.Process.myUid());
-        if (android.os.Process.myUid() / 100000 != 0) errors.put("Caller must be Android user 0");
+        out.put("caller_uid", Process.myUid());
+        if (Process.myUid() / 100000 != 0) errors.put("Caller must be Android user 0");
         JSONObject test = new JSONObject(); out.put("tcl_test", test);
         test.put("source", "Settings.Global.getString_normal_application_context");
         try {
@@ -204,7 +208,7 @@ final class AppBootControl {
                 if (ai == null || !AppBootPolicy.PACKAGE.equals(ai.packageName) || ai.applicationInfo == null
                         || ai.applicationInfo.uid != app.uid || !app.sourceDir.equals(ai.applicationInfo.sourceDir))
                     throw new IllegalArgumentException("Fixed activity declaration or identity does not match: " + name);
-                // 桌面切换那两个必须导出（跨进程可拉起）；其余 22 个是 cyberui 内部跳转，
+                // 桌面切换那两个必须导出（跨进程可拉起）；其余目标是 cyberui 内部跳转，
                 // exported=false 是正常的，拦的是本进程 startActivity。
                 if ((AppBootPolicy.ACTIVITY.equals(name) || AppBootPolicy.ALIAS.equals(name)) && !ai.exported)
                     throw new IllegalArgumentException("Desktop-switch target must be exported: " + name);
@@ -237,7 +241,7 @@ final class AppBootControl {
         JSONObject data = common(); data.put("schema", 1); data.put("id", id); data.put("time_ms", System.currentTimeMillis());
         data.put("user_id", 0); data.put("original_exists", true); data.put("original_sha256", before.sha);
         data.put("config_content", before.raw); data.put("proposed_config_content", proposed);
-        data.put("proposed_sha256", AppBootPolicy.sha(proposed)); data.put("target_identity", identity);
+        data.put("proposed_sha256", Hex.sha256(proposed)); data.put("target_identity", identity);
         data.put("operation", operation); data.put("phase", "before_provider_write");
         data.put("requires_full_restart", restoreId != null);
         if (restoreId != null) data.put("restore_backup_id", restoreId);
@@ -316,6 +320,6 @@ final class AppBootControl {
     private static String describe(Throwable failure) { return failure.getClass().getName() + ": " + failure.getMessage(); }
     private static final class State {
         final String raw, sha;
-        State(String raw) throws Exception { this.raw = raw; sha = AppBootPolicy.sha(raw); }
+        State(String raw) throws Exception { this.raw = raw; sha = Hex.sha256(raw); }
     }
 }

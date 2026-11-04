@@ -1,8 +1,6 @@
 package app.ffalcontrol;
 
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -96,7 +94,11 @@ final class AppBootPolicy {
         }
     }
 
-    /** 在原始行基础上追加缺失的 TARGETS，其余字节保持原样（字符串级拼接，不做 JSON 重序列化）。 */
+    /**
+     * 在原始行基础上追加缺失的 TARGETS，其余字节保持原样（字符串级拼接，不做 JSON 重序列化）。
+     * 应用内一键恢复不走这里，它用 JSONObject 重序列化后再经 ConfigControl 写入。
+     * POST /app-boot-policy 提交的 config_content 仍必须是这个形状，由 {@link #addition} 校验。
+     */
     static String propose(String raw) {
         List<String> have = new ArrayList<String>(components(raw));
         List<String> need = new ArrayList<String>();
@@ -148,8 +150,8 @@ final class AppBootPolicy {
             fail("Restore requires this endpoint's own original add-operation backup");
         String original = string(saved.get("config_content"), "Saved original raw content");
         String proposed = string(saved.get("proposed_config_content"), "Saved proposed raw content");
-        if (!sha(original).equals(saved.get("original_sha256"))
-                || !sha(proposed).equals(saved.get("proposed_sha256"))
+        if (!Hex.sha256(original).equals(saved.get("original_sha256"))
+                || !Hex.sha256(proposed).equals(saved.get("proposed_sha256"))
                 || !proposed.equals(currentRaw)) fail("Backup content SHA or exact current row does not match");
         if (addition(original, proposed).isEmpty()) fail("Backup does not contain a fixed-component addition");
         return original;
@@ -183,13 +185,6 @@ final class AppBootPolicy {
         if (new HashSet<String>(result).size() != result.size()) fail(purpose + " contains duplicate entries");
         return result;
     }
-    static String sha(String raw) throws Exception {
-        byte[] digest = MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8));
-        StringBuilder out = new StringBuilder();
-        for (byte b : digest) out.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
-        return out.toString();
-    }
-
     /** Locate only the specified value, after StrictJson has validated the entire input. */
     private static int[] componentSpan(String raw) {
         int firstObject = space(raw, space(raw, 0) + 1);

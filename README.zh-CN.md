@@ -77,7 +77,7 @@ ffalcontrol 走的是电视自己暴露的通道：`com.tcl.providers.config`，
 | 按钮 | 行为 |
 |---|---|
 | **刷新诊断** | 只读地重新读取状态并刷新摘要 |
-| **一键恢复** | 写 `Guard_disable_App`（22 包 + 41 组件）、追加 `AppBootPolicy` 的 44 条拦截、把 `app.orchard.tv` 加进 `InstallConfig.launcherStrategy`；若三行都已是目标状态，直接提示"已经执行过，无需重复执行"而不重写 |
+| **一键净化** | 写 `Guard_disable_App`（22 包 + 41 组件）、追加 `AppBootPolicy` 的 44 条拦截、把 `app.orchard.tv` 加进 `InstallConfig.launcherStrategy`；若三行都已是目标状态，直接提示"已经执行过，无需重复执行"而不重写 |
 | **放行 aerial** | 把 `app.orchard.tv` 加进安装白名单 |
 | **默认桌面** | 打开系统默认应用页 |
 | **停止并退出** | 停止本机服务并退出 |
@@ -95,7 +95,7 @@ API token 每次安装随机生成，只打到 logcat，界面只显示前 8 位
 
 完成。不需要电脑、不需要 adb、不需要 token。
 
-> HTTP 端点和 API token 仍然保留，供脚本调用；见「高级用法」。
+> HTTP 端点和 API token 仍然保留，供脚本调用；见「使用」。
 
 ## 使用
 

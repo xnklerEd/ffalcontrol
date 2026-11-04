@@ -39,7 +39,7 @@ final class ConfigControl {
             if (cursor != null && cursor.moveToFirst()) {
                 if (!id.equals(cursor.getString(0))) throw fail(409, "unexpected_row_key");
                 current = cursor.getString(1);
-                sha = current == null ? null : AppBootPolicy.sha(current);
+                sha = current == null ? null : Hex.sha256(current);
             }
         }
 
@@ -60,7 +60,7 @@ final class ConfigControl {
                 new String[]{"config_content"}, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) after = cursor.getString(0);
         }
-        out.put("observed_sha256", after == null ? null : AppBootPolicy.sha(after));
+        out.put("observed_sha256", after == null ? null : Hex.sha256(after));
         out.put("written", content.equals(after));
         out.put("persistence_verified", content.equals(after));
         return out;
